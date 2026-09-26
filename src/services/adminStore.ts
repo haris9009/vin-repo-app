@@ -60,6 +60,8 @@ export interface AdminEmailSettings {
   autoReplyToCustomer: boolean;
   orderReportAutoDispatch: boolean;
   smtpStatus: 'operational' | 'pending';
+  deliveryMode?: 'auto' | 'server' | 'client_web3forms';
+  web3FormsAccessKey?: string;
 }
 
 export interface EmailLog {
@@ -568,6 +570,8 @@ const INITIAL_EMAIL_SETTINGS: AdminEmailSettings = {
   autoReplyToCustomer: true,
   orderReportAutoDispatch: true,
   smtpStatus: 'operational',
+  deliveryMode: 'auto',
+  web3FormsAccessKey: '',
 };
 
 // Initial Sample Email Logs

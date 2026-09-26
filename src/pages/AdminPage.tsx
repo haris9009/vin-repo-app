@@ -52,6 +52,7 @@ import {
   validateStripeCredentials,
   validatePaypalCredentials,
 } from '../services/adminStore';
+import { emailService } from '../services/emailService';
 import { ReportPlanId } from '../types';
 
 interface AdminPageProps {
@@ -94,6 +95,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [orderNotifsInput, setOrderNotifsInput] = useState(() => adminStore.getEmailSettings().orderNotificationsEnabled);
   const [autoReplyCustomerInput, setAutoReplyCustomerInput] = useState(() => adminStore.getEmailSettings().autoReplyToCustomer);
   const [orderDispatchInput, setOrderDispatchInput] = useState(() => adminStore.getEmailSettings().orderReportAutoDispatch ?? true);
+  const [deliveryModeInput, setDeliveryModeInput] = useState<'auto' | 'server' | 'client_web3forms'>(
+    () => adminStore.getEmailSettings().deliveryMode || 'auto'
+  );
+  const [web3FormsKeyInput, setWeb3FormsKeyInput] = useState(
+    () => adminStore.getEmailSettings().web3FormsAccessKey || ''
+  );
   const [isSendingTestEmail, setIsSendingTestEmail] = useState(false);
   const [selectedLogToView, setSelectedLogToView] = useState<EmailLog | null>(null);
   const [emailLogFilter, setEmailLogFilter] = useState<'all' | 'support_query_received' | 'customer_ticket_confirmation' | 'admin_support_reply' | 'order_report_dispatch' | 'test_ping'>('all');
@@ -256,10 +263,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       autoReplyToCustomer: autoReplyCustomerInput,
       orderReportAutoDispatch: orderDispatchInput,
       smtpStatus: 'operational',
+      deliveryMode: deliveryModeInput,
+      web3FormsAccessKey: web3FormsKeyInput.trim(),
     };
     adminStore.saveEmailSettings(updated);
     setEmailSettings(updated);
-    showNotification(`✓ Admin email saved: ${updated.adminEmail}`);
+    showNotification(`✓ Email settings saved! Delivery Mode: ${deliveryModeInput.toUpperCase()}`);
   };
 
   const handleSendTestEmail = async () => {
@@ -267,27 +276,12 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     const targetEmail = adminEmailInput.trim() || emailSettings.adminEmail;
     const sender = senderNameInput.trim() || emailSettings.senderName;
     try {
-      const res = await fetch('/api/email/test', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetEmail,
-          senderName: sender,
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        adminStore.sendEmail({
-          to: targetEmail,
-          from: `"${sender}" <${targetEmail}>`,
-          subject: '[LIVE TEST] Server Mail Relay Operational - WheelClarify',
-          body: `Real-time test transmission successfully sent from your website server via Nodemailer.\n\nTarget Admin Email: ${targetEmail}\nSender: ${sender}\nMessage-ID: ${data.messageId || 'Delivered'}\nStatus: 200 OK (Delivered directly from Node.js server)`,
-          type: 'test_ping',
-        });
-        setEmailLogs(adminStore.getEmailLogs());
-        showNotification(`✓ Real server test email delivered to ${targetEmail}! Message ID: ${data.messageId || 'OK'}`);
+      const result = await emailService.sendTestPing(targetEmail, sender);
+      setEmailLogs(adminStore.getEmailLogs());
+      if (result.success) {
+        showNotification(`✓ Hostinger PHP mailer test ping delivered to ${targetEmail}!`);
       } else {
-        showNotification(`✕ Email server notice: ${data.error || 'Check server logs'}`);
+        showNotification(`✕ Test delivery notice: ${result.error || 'Check server configuration'}`);
       }
     } catch (err: any) {
       const log = adminStore.sendTestEmail(targetEmail);
@@ -2830,6 +2824,140 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                       onChange={(e) => setOrderDispatchInput(e.target.checked)}
                       className="w-4 h-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900 cursor-pointer"
                     />
+                  </div>
+                </div>
+              </div>
+
+              {/* Hostinger Static vs Node.js Server Deployment Architecture */}
+              <div className="pt-4 border-t border-slate-200 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h5 className="text-xs font-black uppercase tracking-wider text-slate-900">
+                      Mail Delivery Strategy &amp; Hosting Architecture
+                    </h5>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Choose how emails are transmitted depending on your server setup.
+                    </p>
+                  </div>
+                  <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-800 border border-amber-200">
+                    Hostinger &amp; Node Compatible
+                  </span>
+                </div>
+
+                {/* Delivery Mode Radios */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <label
+                    className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                      deliveryModeInput === 'auto'
+                        ? 'border-slate-900 bg-slate-50 shadow-xs'
+                        : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="deliveryMode"
+                        value="auto"
+                        checked={deliveryModeInput === 'auto'}
+                        onChange={() => setDeliveryModeInput('auto')}
+                        className="text-slate-900 focus:ring-slate-900 cursor-pointer"
+                      />
+                      <span className="text-xs font-bold text-slate-900">Auto-Detect (Recommended)</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 pl-5 leading-normal">
+                      Tries Node server <code className="font-mono text-slate-700">/api/send</code>. If deployed statically on Hostinger (returning HTML), automatically uses Web3Forms.
+                    </p>
+                  </label>
+
+                  <label
+                    className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                      deliveryModeInput === 'client_web3forms'
+                        ? 'border-slate-900 bg-slate-50 shadow-xs'
+                        : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="deliveryMode"
+                        value="client_web3forms"
+                        checked={deliveryModeInput === 'client_web3forms'}
+                        onChange={() => setDeliveryModeInput('client_web3forms')}
+                        className="text-slate-900 focus:ring-slate-900 cursor-pointer"
+                      />
+                      <span className="text-xs font-bold text-slate-900">Hostinger Static (Web3Forms)</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 pl-5 leading-normal">
+                      100% Client-side delivery for Hostinger static <code className="font-mono text-slate-700">dist/</code> upload. No Node.js server needed.
+                    </p>
+                  </label>
+
+                  <label
+                    className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
+                      deliveryModeInput === 'server'
+                        ? 'border-slate-900 bg-slate-50 shadow-xs'
+                        : 'border-slate-200 hover:border-slate-300'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <input
+                        type="radio"
+                        name="deliveryMode"
+                        value="server"
+                        checked={deliveryModeInput === 'server'}
+                        onChange={() => setDeliveryModeInput('server')}
+                        className="text-slate-900 focus:ring-slate-900 cursor-pointer"
+                      />
+                      <span className="text-xs font-bold text-slate-900">Custom Node Server (SMTP)</span>
+                    </div>
+                    <p className="text-[10px] text-slate-500 pl-5 leading-normal">
+                      Relays via Express backend <code className="font-mono text-slate-700">server.ts</code> using environment variables (<code className="font-mono text-slate-700">SMTP_HOST</code>).
+                    </p>
+                  </label>
+                </div>
+
+                {/* Sub-Card: Web3Forms Free Client-Side Setup */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                      <Key className="w-3.5 h-3.5 text-amber-500" />
+                      Web3Forms Access Key (For Hostinger Static Hosting)
+                    </span>
+                    <a
+                      href="https://web3forms.com"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-[11px] font-bold text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                    >
+                      Get Free Access Key (30s) <ExternalLink className="w-3 h-3" />
+                    </a>
+                  </div>
+                  <input
+                    type="text"
+                    value={web3FormsKeyInput}
+                    onChange={(e) => setWeb3FormsKeyInput(e.target.value)}
+                    placeholder="e.g. a4a8385a-0f9c-4b51-9ef2-5b9671d1df36 (leave blank for built-in default)"
+                    className="w-full bg-white border border-slate-300 focus:border-slate-900 rounded-lg px-3 py-2 text-xs font-mono text-slate-900 focus:outline-none"
+                  />
+                  <p className="text-[10px] text-slate-500 leading-relaxed">
+                    When you upload your static build (<code className="font-mono text-slate-700">dist</code>) to Hostinger, the browser posts directly to Web3Forms without requiring a Node.js server.
+                  </p>
+                </div>
+
+                {/* Sub-Card: Node.js Server SMTP Configuration Reference */}
+                <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1.5 text-xs">
+                  <span className="font-bold text-slate-900 block">
+                    Node.js Express Server Setup (.env variables for server.ts)
+                  </span>
+                  <p className="text-[11px] text-slate-500 leading-relaxed">
+                    If running the full-stack server (<code className="font-mono text-slate-700">node server.ts</code>), configure your SMTP credentials in <code className="font-mono text-slate-700">.env</code>:
+                  </p>
+                  <div className="font-mono text-[10px] bg-slate-900 text-slate-200 p-2.5 rounded-lg overflow-x-auto space-y-0.5">
+                    <div>SMTP_HOST="smtp.gmail.com" # or smtp.hostinger.com</div>
+                    <div>SMTP_PORT="587" # or 465 for SSL</div>
+                    <div>SMTP_USER="affandark@gmail.com"</div>
+                    <div>SMTP_PASS="your-app-password"</div>
+                    <div>SMTP_FROM="WheelClarify &lt;affandark@gmail.com&gt;"</div>
                   </div>
                 </div>
               </div>

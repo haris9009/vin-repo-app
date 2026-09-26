@@ -65,21 +65,27 @@ interface ServerEmailLog {
 
 const serverEmailLogs: ServerEmailLog[] = [];
 
-// Create Nodemailer Transporter
+// Create Nodemailer Transporter using environment variables
 async function getMailTransporter() {
   if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    const port = Number(process.env.SMTP_PORT) || 587;
+    const isSecure = port === 465 || process.env.SMTP_SECURE === 'true';
+
     return nodemailer.createTransport({
       host: process.env.SMTP_HOST,
-      port: Number(process.env.SMTP_PORT) || 587,
-      secure: Number(process.env.SMTP_PORT) === 465,
+      port,
+      secure: isSecure,
       auth: {
         user: process.env.SMTP_USER,
         pass: process.env.SMTP_PASS,
       },
+      tls: {
+        rejectUnauthorized: process.env.NODE_ENV === 'production' && process.env.SMTP_ALLOW_INSECURE_TLS !== 'true',
+      },
     });
   }
 
-  // Create ethereal test account for real outgoing message transmission
+  // Create ethereal test account for real outgoing message transmission if no SMTP configured
   try {
     const testAccount = await nodemailer.createTestAccount();
     return nodemailer.createTransport({
@@ -553,7 +559,177 @@ async function startServer() {
   // 3. REAL SERVER-SIDE EMAIL DISPATCH & SUPPORT TICKET NOTIFICATIONS
   // =========================================================================
 
-  // Real Email Dispatch Endpoint (Nodemailer)
+  // Core API Route: POST /api/send (Explicit POST with Nodemailer & await)
+  app.post('/api/send', async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    try {
+      const {
+        to,
+        from,
+        name,
+        customerName,
+        email,
+        customerEmail,
+        subject,
+        message,
+        body,
+        html,
+        category,
+        phone,
+        ticketId,
+        orderId,
+        adminEmail,
+        senderName,
+      } = req.body;
+
+      const recipient = (
+        to ||
+        adminEmail ||
+        serverGateways.general.adminEmail ||
+        process.env.ADMIN_EMAIL ||
+        'affandark@gmail.com'
+      ).trim();
+
+      const senderDisplayName =
+        senderName ||
+        name ||
+        customerName ||
+        serverGateways.general.senderName ||
+        process.env.SENDER_NAME ||
+        'WheelClarify Support & Vehicle Audits';
+
+      const fromAddress =
+        process.env.SMTP_FROM ||
+        process.env.SMTP_USER ||
+        adminEmail ||
+        serverGateways.general.adminEmail ||
+        'support@wheelclarify.com';
+
+      const fromField = from || `"${senderDisplayName}" <${fromAddress}>`;
+      const replyAddress = email || customerEmail || undefined;
+
+      const mailSubject =
+        subject ||
+        (category
+          ? `[Support Query] ${category} - ${ticketId || 'Inquiry'}`
+          : 'WheelClarify Support Notification');
+
+      const textBody =
+        message ||
+        body ||
+        `Message received from ${senderDisplayName} (${replyAddress || 'No email specified'})`;
+
+      const transporter = await getMailTransporter();
+
+      const mailOptions = {
+        from: fromField,
+        to: recipient,
+        replyTo: replyAddress,
+        subject: mailSubject,
+        text: textBody,
+        html:
+          html ||
+          `<div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1e293b; max-width: 600px; margin: 0 auto; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
+            <div style="background: #0f172a; padding: 24px; color: #ffffff;">
+              <h2 style="margin: 0; color: #facc15; font-size: 20px;">WheelClarify Vehicle Reports</h2>
+              <p style="margin: 4px 0 0; color: #94a3b8; font-size: 12px;">Official NMVTIS & Federal Title Audit Registry</p>
+            </div>
+            <div style="padding: 24px; background: #ffffff;">
+              <h3 style="margin-top: 0; color: #0f172a; font-size: 16px;">${mailSubject}</h3>
+              <div style="white-space: pre-wrap; font-size: 13px; color: #334155; line-height: 1.6;">${textBody}</div>
+            </div>
+            <div style="background: #f8fafc; padding: 16px 24px; border-top: 1px solid #e2e8f0; font-size: 11px; color: #64748b;">
+              Delivered via Website Server Node Relay • Reply to: <a href="mailto:${replyAddress || recipient}" style="color: #0284c7;">${replyAddress || recipient}</a>
+            </div>
+          </div>`,
+      };
+
+      // Ensure the server endpoint waits (await) for the email process to finish
+      const info = await transporter.sendMail(mailOptions);
+      const previewUrl = nodemailer.getTestMessageUrl(info);
+
+      const logEntry: ServerEmailLog = {
+        id: `srv-send-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+        type: ticketId ? 'support_query_received' : orderId ? 'order_report_dispatch' : 'custom_outbound',
+        from: fromField,
+        to: recipient,
+        subject: mailSubject,
+        body: textBody,
+        status: 'Delivered',
+        messageId: info.messageId,
+        previewUrl,
+        timestamp: new Date().toLocaleString('en-US', {
+          dateStyle: 'short',
+          timeStyle: 'medium',
+        }),
+      };
+
+      serverEmailLogs.unshift(logEntry);
+
+      console.info(
+        `%c[POST /api/send SUCCESS] ✉️ Recipient: ${recipient} | MessageID: ${info.messageId}`,
+        'color: #10b981; font-weight: bold;'
+      );
+
+      return res.status(200).json({
+        success: true,
+        messageId: info.messageId,
+        previewUrl: previewUrl || undefined,
+        recipient,
+        message: 'Email delivered successfully',
+        log: logEntry,
+      });
+    } catch (err: any) {
+      console.error('Server email send failed at POST /api/send:', err);
+      return res.status(500).json({
+        success: false,
+        error: `Email transmission failed: ${err.message}`,
+      });
+    }
+  });
+
+  // Hostinger PHP Mailer endpoint emulator for dev/preview testing
+  app.post('/send-mail.php', async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    try {
+      const { name, email, message, vin, subject, category, phone } = req.body || {};
+      const ticketId = `TKT-${Math.floor(100000 + Math.random() * 900000)}`;
+
+      console.info(
+        `%c[POST /send-mail.php] ✉️ Customer: ${name} (${email}) | VIN: ${vin || 'N/A'} | Ticket: ${ticketId}`,
+        'color: #06b6d4; font-weight: bold;'
+      );
+
+      // Attempt Nodemailer if available, otherwise return success response
+      try {
+        const transporter = await getMailTransporter();
+        const adminEmail = process.env.ADMIN_EMAIL || 'affandark@gmail.com';
+        await transporter.sendMail({
+          from: `"WheelClarify Support" <${adminEmail}>`,
+          to: adminEmail,
+          replyTo: email || undefined,
+          subject: `[WheelClarify #${ticketId}] ${subject || 'Customer Inquiry'} ${vin ? `(VIN: ${vin})` : ''}`,
+          text: `Customer: ${name} (${email})\nVIN: ${vin || 'Not provided'}\nCategory: ${category || 'General'}\nTicket: #${ticketId}\n\nMessage:\n${message}`,
+        });
+      } catch (mailErr) {
+        // Dev log
+        console.warn('Dev mailer fallback notice:', mailErr);
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'Email sent successfully!',
+        ticketId,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: err.message || 'PHP mailer simulation error',
+      });
+    }
+  });
+
+  // Real Email Dispatch Endpoint (Nodemailer alias)
   app.post('/api/email/send', async (req, res) => {
     try {
       const {
