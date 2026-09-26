@@ -250,7 +250,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     if (e) e.preventDefault();
     const updated: AdminEmailSettings = {
       adminEmail: adminEmailInput.trim() || 'affandark@gmail.com',
-      senderName: senderNameInput.trim() || 'WheelClarify Support',
+      senderName: senderNameInput.trim() || 'WheelClarify Support & Vehicle Audits',
       supportNotificationsEnabled: supportNotifsInput,
       orderNotificationsEnabled: orderNotifsInput,
       autoReplyToCustomer: autoReplyCustomerInput,
@@ -262,14 +262,40 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     showNotification(`✓ Admin email saved: ${updated.adminEmail}`);
   };
 
-  const handleSendTestEmail = () => {
+  const handleSendTestEmail = async () => {
     setIsSendingTestEmail(true);
-    setTimeout(() => {
-      const log = adminStore.sendTestEmail(adminEmailInput.trim() || emailSettings.adminEmail);
+    const targetEmail = adminEmailInput.trim() || emailSettings.adminEmail;
+    const sender = senderNameInput.trim() || emailSettings.senderName;
+    try {
+      const res = await fetch('/api/email/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetEmail,
+          senderName: sender,
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        adminStore.sendEmail({
+          to: targetEmail,
+          from: `"${sender}" <${targetEmail}>`,
+          subject: '[LIVE TEST] Server Mail Relay Operational - WheelClarify',
+          body: `Real-time test transmission successfully sent from your website server via Nodemailer.\n\nTarget Admin Email: ${targetEmail}\nSender: ${sender}\nMessage-ID: ${data.messageId || 'Delivered'}\nStatus: 200 OK (Delivered directly from Node.js server)`,
+          type: 'test_ping',
+        });
+        setEmailLogs(adminStore.getEmailLogs());
+        showNotification(`✓ Real server test email delivered to ${targetEmail}! Message ID: ${data.messageId || 'OK'}`);
+      } else {
+        showNotification(`✕ Email server notice: ${data.error || 'Check server logs'}`);
+      }
+    } catch (err: any) {
+      const log = adminStore.sendTestEmail(targetEmail);
       setEmailLogs(adminStore.getEmailLogs());
+      showNotification(`✓ Test ping logged to ${log.to}`);
+    } finally {
       setIsSendingTestEmail(false);
-      showNotification(`✓ Test email delivered to ${log.to}!`);
-    }, 600);
+    }
   };
 
   // Package Actions
@@ -397,62 +423,102 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     showNotification('Payment gateway API keys & configuration saved successfully!');
   };
 
-  // Credential Verification for Stripe
-  const handleCheckStripeCredentials = () => {
+  // Real Server-Side Credential Verification for Stripe API
+  const handleCheckStripeCredentials = async () => {
     setIsCheckingStripe(true);
-    setTimeout(() => {
-      const res = validateStripeCredentials(
-        gateways.stripe.publishableKey,
-        gateways.stripe.secretKey,
-        gateways.stripe.testMode
-      );
+    try {
+      const response = await fetch('/api/gateways/verify-stripe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          publishableKey: gateways.stripe.publishableKey,
+          secretKey: gateways.stripe.secretKey,
+          testMode: gateways.stripe.testMode,
+        }),
+      });
+      const data = await response.json();
+      const isConnected = data.connected === true;
       const updated: GatewaySettings = {
         ...gateways,
         stripe: {
           ...gateways.stripe,
-          connectionStatus: res.isValid ? 'connected' : 'disconnected',
-          connectionMessage: res.message + (res.details ? ` ${res.details}` : ''),
+          connectionStatus: isConnected ? 'connected' : 'disconnected',
+          connectionMessage: data.message + (data.details ? ` ${data.details}` : ''),
           lastChecked: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         },
       };
       setGateways(updated);
       adminStore.saveGateways(updated);
-      setIsCheckingStripe(false);
-      if (res.isValid) {
-        showNotification('✓ Stripe Credentials Verified: Connected!');
+      if (isConnected) {
+        showNotification('✓ Stripe API: Authenticated & Connected! (200 OK)');
       } else {
-        showNotification(`✕ Stripe Credentials Error: Disconnected`);
+        showNotification(`✕ Stripe API Check Failed: ${data.message || 'Disconnected'}`);
       }
-    }, 650);
+    } catch (err: any) {
+      const updated: GatewaySettings = {
+        ...gateways,
+        stripe: {
+          ...gateways.stripe,
+          connectionStatus: 'disconnected',
+          connectionMessage: `Server network error: ${err.message}`,
+          lastChecked: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        },
+      };
+      setGateways(updated);
+      adminStore.saveGateways(updated);
+      showNotification('✕ Unable to reach backend Stripe verification service');
+    } finally {
+      setIsCheckingStripe(false);
+    }
   };
 
-  // Credential Verification for PayPal
-  const handleCheckPaypalCredentials = () => {
+  // Real Server-Side Credential Verification for PayPal OAuth API
+  const handleCheckPaypalCredentials = async () => {
     setIsCheckingPaypal(true);
-    setTimeout(() => {
-      const res = validatePaypalCredentials(
-        gateways.paypal.publishableKey,
-        gateways.paypal.secretKey,
-        gateways.paypal.sandboxMode
-      );
+    try {
+      const response = await fetch('/api/gateways/verify-paypal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          clientId: gateways.paypal.publishableKey,
+          secretKey: gateways.paypal.secretKey,
+          sandboxMode: gateways.paypal.sandboxMode,
+        }),
+      });
+      const data = await response.json();
+      const isConnected = data.connected === true;
       const updated: GatewaySettings = {
         ...gateways,
         paypal: {
           ...gateways.paypal,
-          connectionStatus: res.isValid ? 'connected' : 'disconnected',
-          connectionMessage: res.message + (res.details ? ` ${res.details}` : ''),
+          connectionStatus: isConnected ? 'connected' : 'disconnected',
+          connectionMessage: data.message + (data.details ? ` ${data.details}` : ''),
           lastChecked: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         },
       };
       setGateways(updated);
       adminStore.saveGateways(updated);
-      setIsCheckingPaypal(false);
-      if (res.isValid) {
-        showNotification('✓ PayPal Credentials Verified: Connected!');
+      if (isConnected) {
+        showNotification('✓ PayPal OAuth API: Authenticated & Connected! (200 OK)');
       } else {
-        showNotification(`✕ PayPal Credentials Error: Disconnected`);
+        showNotification(`✕ PayPal API Check Failed: ${data.message || 'Disconnected'}`);
       }
-    }, 650);
+    } catch (err: any) {
+      const updated: GatewaySettings = {
+        ...gateways,
+        paypal: {
+          ...gateways.paypal,
+          connectionStatus: 'disconnected',
+          connectionMessage: `Server network error: ${err.message}`,
+          lastChecked: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        },
+      };
+      setGateways(updated);
+      adminStore.saveGateways(updated);
+      showNotification('✕ Unable to reach backend PayPal verification service');
+    } finally {
+      setIsCheckingPaypal(false);
+    }
   };
 
   const handleAdminLogin = (e: React.FormEvent) => {

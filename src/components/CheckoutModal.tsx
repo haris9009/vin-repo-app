@@ -11,6 +11,7 @@ import {
   Phone,
   Lock,
   ShieldCheck,
+  ShieldAlert,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { FullVehicleReport, ReportPlanId } from '../types';
@@ -70,12 +71,118 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
     setStep('payment');
   };
 
-  const executePay = (methodName: string) => {
+  // Live Payment Error Diagnostic
+  const [paymentError, setPaymentError] = useState<{
+    gateway: 'stripe' | 'paypal';
+    title: string;
+    message: string;
+    details?: string;
+  } | null>(null);
+
+  // 1. Live Stripe Checkout Execution
+  const handlePayWithStripe = async (methodName: string) => {
+    setPaymentError(null);
     setIsProcessing(true);
     setProcessingMethod(methodName);
 
     try {
-      // Save order to store and auto-dispatch confirmation emails
+      const res = await fetch('/api/stripe/create-checkout-session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vin: report.specs.vin,
+          vehicleName: `${report.specs.year} ${report.specs.make} ${report.specs.model}`.trim(),
+          packageId: plan.id,
+          packageName: plan.name,
+          amount: plan.price,
+          customerEmail: email.trim(),
+          customerName: fullName.trim(),
+          phone: phone.trim(),
+          mileage: mileage.trim(),
+          returnUrl: window.location.origin,
+          secretKey: gateways.stripe.secretKey,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.url) {
+        window.location.href = data.url;
+        return;
+      }
+
+      setIsProcessing(false);
+      setPaymentError({
+        gateway: 'stripe',
+        title: 'Stripe API Checkout Error',
+        message: data.error || 'Failed to initialize Stripe checkout session.',
+        details: data.details ? JSON.stringify(data.details) : 'Please check your Stripe Secret Key in the Admin Panel > Payment Gateways.',
+      });
+    } catch (err: any) {
+      setIsProcessing(false);
+      setPaymentError({
+        gateway: 'stripe',
+        title: 'Stripe Connection Exception',
+        message: err.message || 'Unable to connect to Stripe server.',
+        details: 'Verify backend connection and network access.',
+      });
+    }
+  };
+
+  // 2. Live PayPal Smart Checkout Execution
+  const handlePayWithPaypal = async (methodName: string) => {
+    setPaymentError(null);
+    setIsProcessing(true);
+    setProcessingMethod(methodName);
+
+    try {
+      const res = await fetch('/api/paypal/create-order', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          vin: report.specs.vin,
+          packageId: plan.id,
+          packageName: plan.name,
+          amount: plan.price,
+          returnUrl: window.location.origin,
+          clientId: gateways.paypal.publishableKey,
+          secretKey: gateways.paypal.secretKey,
+          sandboxMode: gateways.paypal.sandboxMode,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok && data.approveUrl) {
+        window.location.href = data.approveUrl;
+        return;
+      }
+
+      setIsProcessing(false);
+      setPaymentError({
+        gateway: 'paypal',
+        title: 'PayPal API Checkout Error',
+        message: data.error || 'Failed to create PayPal order.',
+        details: 'Please check your PayPal Client ID and Secret in the Admin Panel > Payment Gateways.',
+      });
+    } catch (err: any) {
+      setIsProcessing(false);
+      setPaymentError({
+        gateway: 'paypal',
+        title: 'PayPal Connection Exception',
+        message: err.message || 'Unable to connect to PayPal server.',
+        details: 'Verify backend connectivity.',
+      });
+    }
+  };
+
+  // 3. Developer Sandbox Simulator
+  const handleSimulatePayment = (methodName: string) => {
+    setPaymentError(null);
+    setIsProcessing(true);
+    setProcessingMethod(`${methodName} (Test Sandbox)`);
+
+    try {
       adminStore.saveOrder({
         vin: report.specs.vin,
         vehicleName: `${report.specs.year} ${report.specs.make} ${report.specs.model}`.trim(),
@@ -86,7 +193,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
         packageId: plan.id,
         packageName: plan.name,
         amount: plan.price,
-        paymentMethod: methodName,
+        paymentMethod: `${methodName} [Dev Simulator]`,
         paymentStatus: 'Paid',
         deliveryStatus: 'Emailed & Completed',
         reportSummary: {
@@ -331,12 +438,44 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     </div>
                   </div>
 
+                  {/* Diagnostic Error Banner if Live API Returns an Issue */}
+                  {paymentError && (
+                    <div className="p-3.5 rounded-2xl bg-rose-50 border-2 border-rose-300 text-rose-950 space-y-1.5 animate-fadeIn">
+                      <div className="flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+                        <h4 className="text-xs font-black uppercase tracking-wider text-rose-900">
+                          {paymentError.title}
+                        </h4>
+                      </div>
+                      <p className="text-xs text-rose-800 font-medium leading-relaxed">
+                        {paymentError.message}
+                      </p>
+                      {paymentError.details && (
+                        <div className="text-[10px] font-mono text-rose-700 bg-white/70 p-2 rounded-lg border border-rose-200 break-words">
+                          {paymentError.details}
+                        </div>
+                      )}
+                      <div className="pt-1 flex flex-wrap items-center justify-between gap-2 border-t border-rose-200">
+                        <span className="text-[10px] text-rose-600 font-medium">
+                          Configure API keys in Admin Panel &gt; Payment Gateways
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleSimulatePayment('Sandbox Simulation')}
+                          className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[10px] font-black uppercase tracking-wider cursor-pointer"
+                        >
+                          Developer: Simulate Success
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* 1. Stripe Link 1-Click Button */}
                   {gateways.stripeLink.enabled && (
                     <div className="space-y-1">
                       <button
                         type="button"
-                        onClick={() => executePay('Stripe Link (1-Click)')}
+                        onClick={() => handlePayWithStripe('Stripe Link (1-Click)')}
                         className="w-full bg-[#00d66f] hover:bg-[#00c564] active:bg-[#00b058] text-black py-3 px-6 rounded-xl font-bold transition-all flex items-center justify-center gap-2 shadow-sm cursor-pointer active:scale-[0.99]"
                       >
                         <div className="w-4 h-4 rounded-full bg-black text-[#00d66f] flex items-center justify-center text-[10px] font-black">
@@ -367,7 +506,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                   <div className="space-y-2.5">
                     <button
                       type="button"
-                      onClick={() => executePay('Stripe Checkout (Cards & Wallets)')}
+                      onClick={() => handlePayWithStripe('Stripe Checkout (Cards & Wallets)')}
                       className="w-full py-3.5 px-6 rounded-xl bg-[#635bff] hover:bg-[#5346e0] active:bg-[#4338ca] text-white font-black text-xs sm:text-sm uppercase tracking-wider transition-all shadow-md flex items-center justify-center gap-2.5 cursor-pointer active:scale-[0.99]"
                     >
                       <CreditCard className="w-4 h-4 text-white" />
@@ -417,12 +556,44 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     </div>
                   </div>
 
+                  {/* Diagnostic Error Banner if Live API Returns an Issue */}
+                  {paymentError && (
+                    <div className="p-3.5 rounded-2xl bg-rose-50 border-2 border-rose-300 text-rose-950 space-y-1.5 animate-fadeIn">
+                      <div className="flex items-center gap-2">
+                        <ShieldAlert className="w-4 h-4 text-rose-600 shrink-0" />
+                        <h4 className="text-xs font-black uppercase tracking-wider text-rose-900">
+                          {paymentError.title}
+                        </h4>
+                      </div>
+                      <p className="text-xs text-rose-800 font-medium leading-relaxed">
+                        {paymentError.message}
+                      </p>
+                      {paymentError.details && (
+                        <div className="text-[10px] font-mono text-rose-700 bg-white/70 p-2 rounded-lg border border-rose-200 break-words">
+                          {paymentError.details}
+                        </div>
+                      )}
+                      <div className="pt-1 flex flex-wrap items-center justify-between gap-2 border-t border-rose-200">
+                        <span className="text-[10px] text-rose-600 font-medium">
+                          Configure API keys in Admin Panel &gt; Payment Gateways
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleSimulatePayment('PayPal Sandbox Simulation')}
+                          className="px-2.5 py-1 rounded-lg bg-[#0079c1] hover:bg-[#00629b] text-white text-[10px] font-black uppercase tracking-wider cursor-pointer"
+                        >
+                          Developer: Simulate Success
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
                   {/* PayPal Suite */}
                   <div className="space-y-2.5">
                     {/* 1. Yellow PayPal Button */}
                     <button
                       type="button"
-                      onClick={() => executePay('PayPal Instant')}
+                      onClick={() => handlePayWithPaypal('PayPal Instant')}
                       className="w-full py-3.5 px-6 rounded-xl bg-[#ffc439] hover:bg-[#f4ba31] active:bg-[#e0a823] transition-all flex items-center justify-center cursor-pointer shadow-xs active:scale-[0.99]"
                     >
                       <span className="text-[#003087] font-black italic text-lg tracking-tighter">
@@ -433,7 +604,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     {/* 2. Pay Later Button */}
                     <button
                       type="button"
-                      onClick={() => executePay('PayPal Pay Later')}
+                      onClick={() => handlePayWithPaypal('PayPal Pay Later')}
                       className="w-full py-3 px-6 rounded-xl bg-[#ffc439] hover:bg-[#f4ba31] active:bg-[#e0a823] transition-all flex items-center justify-center gap-2 cursor-pointer shadow-xs active:scale-[0.99]"
                     >
                       <span className="text-[#003087] font-black italic">P</span>
@@ -445,7 +616,7 @@ export const CheckoutModal: React.FC<CheckoutModalProps> = ({
                     {/* 3. Debit or Credit Card Dark Button (Powered by PayPal) */}
                     <button
                       type="button"
-                      onClick={() => executePay('Debit or Credit Card (PayPal)')}
+                      onClick={() => handlePayWithPaypal('Debit or Credit Card (PayPal)')}
                       className="w-full py-3 px-6 rounded-xl bg-[#2c2e2f] hover:bg-[#1f2021] active:bg-[#141516] text-white font-bold text-xs sm:text-sm transition-all flex items-center justify-center gap-2.5 cursor-pointer shadow-xs active:scale-[0.99]"
                     >
                       <CreditCard className="w-4 h-4 text-white" />

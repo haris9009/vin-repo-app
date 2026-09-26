@@ -21,30 +21,54 @@ export const SupportPage: React.FC<SupportPageProps> = ({ onNavigate }) => {
     sentToEmail: string;
   } | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!message.trim()) return;
 
     setIsSubmitting(true);
-    setTimeout(() => {
-      setIsSubmitting(false);
+    const emailSettings = adminStore.getEmailSettings();
+    const custName = customerName.trim() || 'Verified Customer';
+    const custEmail = customerEmail.trim() || 'customer@example.com';
+    const subj = subject.trim() || 'General Inquiry';
+    const msg = message.trim();
 
-      const saved = adminStore.saveTicket({
-        customerName: customerName.trim() || 'Verified Customer',
-        email: customerEmail.trim() || 'customer@example.com',
-        category,
-        subject: subject.trim() || 'General Inquiry',
-        message: message.trim(),
-        priority: category === 'Billing & Refund' || category === 'Report Delivery Issue' ? 'high' : 'normal',
+    try {
+      // 1. Dispatch real email via site backend server
+      await fetch('/api/support/ticket', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          customerName: custName,
+          email: custEmail,
+          category,
+          subject: subj,
+          message: msg,
+          priority: category === 'Billing & Refund' || category === 'Report Delivery Issue' ? 'high' : 'normal',
+          adminEmail: emailSettings.adminEmail,
+          senderName: emailSettings.senderName,
+        }),
       });
+    } catch (err) {
+      console.warn('Backend ticket dispatch fallback:', err);
+    }
 
-      setSubmittedTicket({
-        id: saved.ticketNumber,
-        subject: saved.subject,
-        category: saved.category,
-        sentToEmail: saved.email,
-      });
-    }, 700);
+    // 2. Save ticket to admin store
+    const saved = adminStore.saveTicket({
+      customerName: custName,
+      email: custEmail,
+      category,
+      subject: subj,
+      message: msg,
+      priority: category === 'Billing & Refund' || category === 'Report Delivery Issue' ? 'high' : 'normal',
+    });
+
+    setIsSubmitting(false);
+    setSubmittedTicket({
+      id: saved.ticketNumber,
+      subject: saved.subject,
+      category: saved.category,
+      sentToEmail: saved.email,
+    });
   };
 
   const handleReset = () => {

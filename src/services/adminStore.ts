@@ -261,6 +261,61 @@ export function validatePaypalCredentials(
   };
 }
 
+// Backend Server Verification for Stripe (calls real https://api.stripe.com/v1/balance)
+export async function verifyStripeWithServer(
+  publishableKey: string,
+  secretKey: string,
+  testMode: boolean
+): Promise<{ isValid: boolean; message: string; details?: string; livemode?: boolean }> {
+  try {
+    const res = await fetch('/api/gateways/verify-stripe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ publishableKey, secretKey, testMode }),
+    });
+    const data = await res.json();
+    return {
+      isValid: Boolean(data.connected),
+      message: data.message || (data.connected ? 'Stripe API verified & connected!' : 'Stripe rejected key.'),
+      details: data.details,
+      livemode: data.livemode,
+    };
+  } catch (err: any) {
+    return {
+      isValid: false,
+      message: 'Failed to contact backend server for Stripe verification.',
+      details: err.message,
+    };
+  }
+}
+
+// Backend Server Verification for PayPal (calls real PayPal OAuth token endpoint)
+export async function verifyPaypalWithServer(
+  publishableKey: string,
+  secretKey: string,
+  sandboxMode: boolean
+): Promise<{ isValid: boolean; message: string; details?: string }> {
+  try {
+    const res = await fetch('/api/gateways/verify-paypal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clientId: publishableKey, secretKey, sandboxMode }),
+    });
+    const data = await res.json();
+    return {
+      isValid: Boolean(data.connected),
+      message: data.message || (data.connected ? 'PayPal API verified & connected!' : 'PayPal rejected credentials.'),
+      details: data.details,
+    };
+  } catch (err: any) {
+    return {
+      isValid: false,
+      message: 'Failed to contact backend server for PayPal verification.',
+      details: err.message,
+    };
+  }
+}
+
 // Initial Sample Orders
 const INITIAL_ORDERS: ReportOrder[] = [
   {
@@ -942,6 +997,27 @@ class AdminStore {
       'color: #10b981; font-weight: bold;',
       'color: #3b82f6;'
     );
+
+    // Also asynchronously trigger real backend server email dispatch
+    try {
+      fetch('/api/email/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          to: newLog.to,
+          from: newLog.from,
+          subject: newLog.subject,
+          body: newLog.body,
+          type: newLog.type,
+          ticketId: newLog.ticketId,
+          orderId: newLog.orderId,
+          adminEmail: settings.adminEmail,
+          senderName: settings.senderName,
+        }),
+      }).catch((e) => console.warn('Server mail notice:', e));
+    } catch {
+      // ignore
+    }
 
     return newLog;
   }
