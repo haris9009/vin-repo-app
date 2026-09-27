@@ -688,6 +688,90 @@ async function startServer() {
     }
   });
 
+  // Hostinger check-payment.php endpoint emulator for dev/preview testing
+  const handleCheckPaymentRequest = async (req: any, res: any) => {
+    res.setHeader('Content-Type', 'application/json');
+    try {
+      const { gateway, secretKey, clientId, clientSecret, sandbox, testMode, sandboxMode, publishableKey } = req.body || {};
+      const targetGateway = String(gateway || '').toLowerCase().trim();
+      const isSandbox = Boolean(sandbox ?? sandboxMode ?? testMode ?? false);
+
+      if (targetGateway === 'stripe') {
+        const keyToTest = (secretKey || serverGateways.stripe.secretKey || process.env.STRIPE_SECRET_KEY || '').trim();
+        if (!keyToTest) {
+          return res.status(400).json({ success: false, connected: false, error: 'Stripe Secret Key is missing.' });
+        }
+
+        const stripeRes = await fetch('https://api.stripe.com/v1/balance', {
+          headers: { Authorization: `Bearer ${keyToTest}` },
+        });
+        const stripeData = await stripeRes.json() as any;
+
+        if (!stripeRes.ok) {
+          const errorMsg = stripeData?.error?.message || 'Authentication with Stripe failed.';
+          return res.status(stripeRes.status >= 400 && stripeRes.status < 500 ? stripeRes.status : 400).json({
+            success: false,
+            connected: false,
+            error: `Stripe API Authentication Failed: ${errorMsg}`,
+          });
+        }
+
+        const modeStr = stripeData.livemode ? 'Live Production Mode' : 'Sandbox / Test Mode';
+        const currencies = stripeData.available?.map((a: any) => a.currency?.toUpperCase()).filter(Boolean).join(', ') || 'USD';
+        return res.status(200).json({
+          success: true,
+          connected: true,
+          message: `Connected: Stripe API credentials verified successfully (200 OK)! Mode: ${modeStr}. Settlement currencies: ${currencies}.`,
+        });
+      }
+
+      if (targetGateway === 'paypal') {
+        const idToTest = (clientId || serverGateways.paypal.publishableKey || process.env.PAYPAL_CLIENT_ID || '').trim();
+        const secretToTest = (clientSecret || secretKey || serverGateways.paypal.secretKey || process.env.PAYPAL_SECRET_KEY || '').trim();
+
+        if (!idToTest || !secretToTest) {
+          return res.status(400).json({ success: false, connected: false, error: 'PayPal Client ID and Secret Key are both required.' });
+        }
+
+        const baseUrl = isSandbox ? 'https://api-m.sandbox.paypal.com' : 'https://api-m.paypal.com';
+        const authHeader = `Basic ${Buffer.from(`${idToTest}:${secretToTest}`).toString('base64')}`;
+
+        const paypalRes = await fetch(`${baseUrl}/v1/oauth2/token`, {
+          method: 'POST',
+          headers: {
+            Authorization: authHeader,
+            'Content-Type': 'application/x-www-form-urlencoded',
+          },
+          body: 'grant_type=client_credentials',
+        });
+        const paypalData = await paypalRes.json() as any;
+
+        if (!paypalRes.ok) {
+          const errorDesc = paypalData?.error_description || paypalData?.error || 'Invalid credentials';
+          return res.status(paypalRes.status >= 400 && paypalRes.status < 500 ? paypalRes.status : 400).json({
+            success: false,
+            connected: false,
+            error: `PayPal API Authentication Failed: ${errorDesc}`,
+          });
+        }
+
+        const modeStr = isSandbox ? 'Sandbox Mode' : 'Live Production Mode';
+        return res.status(200).json({
+          success: true,
+          connected: true,
+          message: `Connected: PayPal REST credentials verified successfully! Generated active access token. Mode: ${modeStr} (App ID: ${paypalData.app_id || 'Active'}).`,
+        });
+      }
+
+      return res.status(400).json({ success: false, connected: false, error: "Unsupported gateway. Expected 'stripe' or 'paypal'." });
+    } catch (err: any) {
+      return res.status(500).json({ success: false, connected: false, error: err.message || 'Payment check failure' });
+    }
+  };
+
+  app.post('/check-payment.php', handleCheckPaymentRequest);
+  app.post('/api/payment/check', handleCheckPaymentRequest);
+
   // Hostinger PHP Mailer endpoint emulator for dev/preview testing
   app.post('/send-mail.php', async (req, res) => {
     res.setHeader('Content-Type', 'application/json');

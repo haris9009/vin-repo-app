@@ -53,6 +53,7 @@ import {
   validatePaypalCredentials,
 } from '../services/adminStore';
 import { emailService } from '../services/emailService';
+import { verifyStripeCredentials, verifyPaypalCredentials } from '../services/paymentCheckService';
 import { ReportPlanId } from '../types';
 
 interface AdminPageProps {
@@ -417,99 +418,99 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     showNotification('Payment gateway API keys & configuration saved successfully!');
   };
 
-  // Real Server-Side Credential Verification for Stripe API
+  // Client-Side & Hostinger PHP Fallback Credential Verification for Stripe API
   const handleCheckStripeCredentials = async () => {
     setIsCheckingStripe(true);
     try {
-      const response = await fetch('/api/gateways/verify-stripe', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          publishableKey: gateways.stripe.publishableKey,
-          secretKey: gateways.stripe.secretKey,
-          testMode: gateways.stripe.testMode,
-        }),
+      const result = await verifyStripeCredentials({
+        secretKey: gateways.stripe.secretKey,
+        publishableKey: gateways.stripe.publishableKey,
+        testMode: gateways.stripe.testMode,
       });
-      const data = await response.json();
-      const isConnected = data.connected === true;
+
       const updated: GatewaySettings = {
         ...gateways,
         stripe: {
           ...gateways.stripe,
-          connectionStatus: isConnected ? 'connected' : 'disconnected',
-          connectionMessage: data.message + (data.details ? ` ${data.details}` : ''),
+          connectionStatus: result.connected ? 'connected' : 'disconnected',
+          connectionMessage: result.message + (result.details ? ` ${result.details}` : ''),
           lastChecked: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         },
       };
       setGateways(updated);
       adminStore.saveGateways(updated);
-      if (isConnected) {
+
+      if (result.connected) {
         showNotification('✓ Stripe API: Authenticated & Connected! (200 OK)');
       } else {
-        showNotification(`✕ Stripe API Check Failed: ${data.message || 'Disconnected'}`);
+        showNotification(`✕ Stripe Check: ${result.message || 'Disconnected'}`);
       }
     } catch (err: any) {
+      const errorMsg = err?.message?.includes('Unexpected token') || err?.message?.includes('<')
+        ? 'Received HTML instead of JSON. Ensure check-payment.php is uploaded to public_html/.'
+        : `Connection error: ${err.message}`;
+
       const updated: GatewaySettings = {
         ...gateways,
         stripe: {
           ...gateways.stripe,
           connectionStatus: 'disconnected',
-          connectionMessage: `Server network error: ${err.message}`,
+          connectionMessage: errorMsg,
           lastChecked: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         },
       };
       setGateways(updated);
       adminStore.saveGateways(updated);
-      showNotification('✕ Unable to reach backend Stripe verification service');
+      showNotification('✕ Unable to verify Stripe credentials');
     } finally {
       setIsCheckingStripe(false);
     }
   };
 
-  // Real Server-Side Credential Verification for PayPal OAuth API
+  // Client-Side & Hostinger PHP Fallback Credential Verification for PayPal OAuth API
   const handleCheckPaypalCredentials = async () => {
     setIsCheckingPaypal(true);
     try {
-      const response = await fetch('/api/gateways/verify-paypal', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId: gateways.paypal.publishableKey,
-          secretKey: gateways.paypal.secretKey,
-          sandboxMode: gateways.paypal.sandboxMode,
-        }),
+      const result = await verifyPaypalCredentials({
+        clientId: gateways.paypal.publishableKey,
+        secretKey: gateways.paypal.secretKey,
+        sandboxMode: gateways.paypal.sandboxMode,
       });
-      const data = await response.json();
-      const isConnected = data.connected === true;
+
       const updated: GatewaySettings = {
         ...gateways,
         paypal: {
           ...gateways.paypal,
-          connectionStatus: isConnected ? 'connected' : 'disconnected',
-          connectionMessage: data.message + (data.details ? ` ${data.details}` : ''),
+          connectionStatus: result.connected ? 'connected' : 'disconnected',
+          connectionMessage: result.message + (result.details ? ` ${result.details}` : ''),
           lastChecked: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         },
       };
       setGateways(updated);
       adminStore.saveGateways(updated);
-      if (isConnected) {
+
+      if (result.connected) {
         showNotification('✓ PayPal OAuth API: Authenticated & Connected! (200 OK)');
       } else {
-        showNotification(`✕ PayPal API Check Failed: ${data.message || 'Disconnected'}`);
+        showNotification(`✕ PayPal Check: ${result.message || 'Disconnected'}`);
       }
     } catch (err: any) {
+      const errorMsg = err?.message?.includes('Unexpected token') || err?.message?.includes('<')
+        ? 'Received HTML instead of JSON. Ensure check-payment.php is uploaded to public_html/.'
+        : `Connection error: ${err.message}`;
+
       const updated: GatewaySettings = {
         ...gateways,
         paypal: {
           ...gateways.paypal,
           connectionStatus: 'disconnected',
-          connectionMessage: `Server network error: ${err.message}`,
+          connectionMessage: errorMsg,
           lastChecked: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
         },
       };
       setGateways(updated);
       adminStore.saveGateways(updated);
-      showNotification('✕ Unable to reach backend PayPal verification service');
+      showNotification('✕ Unable to verify PayPal credentials');
     } finally {
       setIsCheckingPaypal(false);
     }
